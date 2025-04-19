@@ -10,7 +10,7 @@ class AdaptiveGlobalFilter(nn.Module):
         super().__init__()
         self.dim = dim
         self.complex_weight = None
-        self.weight_generator = nn.Linear(2, dim * 2)  # 从特征图尺寸(h,w)生成权重
+        self.weight_generator = nn.Linear(2, dim * 2)  # (h,w)
     def forward(self, x):
         B, C, H, W = x.shape
         if self.complex_weight is None or self.complex_weight.size(0) != H or self.complex_weight.size(1) != W // 2 + 1:
