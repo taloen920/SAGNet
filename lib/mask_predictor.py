@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from collections import OrderedDict
-from .Context_Rich_Adaptive_Feature_Transform_module import CRAFT
+from .Context_Rich_Adaptive_Feature_Transform_Module import CRAFT
 
 
 class SimpleDecoding(nn.Module):
