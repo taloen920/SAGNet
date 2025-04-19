@@ -27,13 +27,11 @@ class ReferDataset(data.Dataset):
         print('Preparing dataset ......')
         print(args.dataset, split)
 
-        # 处理自定义数据集
-        if args.dataset in ['LandRef', 'rrsis', 'new1216']:
+        if args.dataset in ['LandRef']:
             self.ref_ids = []
             for ref in self.refer.data['refs'][split]:
                 self.ref_ids.append(ref['ref_id'])
 
-            # 获取图像信息
             img_ids = list(set(ref['image_id'] for ref in self.refer.data['refs'][split]))
             self.imgs = []
             for img_id in img_ids:
@@ -42,24 +40,20 @@ class ReferDataset(data.Dataset):
                     'file_name': f"{img_id}.tif"
                 })
         else:
-            # 原有数据集处理
             self.ref_ids = self.refer.getRefIds(split=self.split)
             img_ids = self.refer.getImgIds(self.ref_ids)
             all_imgs = self.refer.Imgs
             self.imgs = list(all_imgs[i] for i in img_ids)
 
-        # 随机选择20%的图像进行mask
         num_images_to_mask = int(len(self.ref_ids) * 0.2)
         self.images_to_mask = random.sample(self.ref_ids, num_images_to_mask)
 
-        # BERT tokenizer处理
         self.input_ids = []
         self.attention_masks = []
         self.tokenizer = BertTokenizer.from_pretrained(args.bert_tokenizer)
 
-        # 处理每个refer的文本描述
         for r in self.ref_ids:
-            if args.dataset in ['LandRef', 'rrsis', 'new1216']:
+            if args.dataset in ['LandRef']:
                 ref = self.refer.Refs[r]
                 sentences_raw = [s['sent'] for s in ref['sentences']]
             else:
@@ -101,16 +95,14 @@ class ReferDataset(data.Dataset):
     def __getitem__(self, index):
         this_ref_id = self.ref_ids[index]
 
-        if self.dataset in ['LandRef', 'rrsis', 'new1216']:
+        if self.dataset in ['LandRef']:
             ref = self.refer.Refs[this_ref_id]
             img_id = ref['image_id']
             img_info = next(img for img in self.imgs if img['id'] == img_id)
 
-            # 加载图像
             img_path = os.path.join(self.refer.IMAGE_DIR, img_info['file_name'])
             img = Image.open(img_path).convert("RGB")
 
-            # 加载掩码
             mask_path = os.path.join(self.refer.ROOT_DIR, f'data/{self.dataset}/masks', f"{img_id}.tif")
             ref_mask = np.array(Image.open(mask_path))
             ref_mask = (ref_mask[:, :, 0] > 0).astype(np.uint8)
@@ -127,15 +119,12 @@ class ReferDataset(data.Dataset):
             annot[ref_mask == 1] = 1
             annot = Image.fromarray(annot.astype(np.uint8), mode="P")
 
-        # 随机添加mask
         if self.split == 'train' and this_ref_id in self.images_to_mask:
             img = self.add_random_boxes(img)
 
-        # 应用图像变换
         if self.image_transforms is not None:
             img, target = self.image_transforms(img, annot)
 
-        # 处理文本嵌入
         if self.eval_mode:
             embedding = []
             att = []
@@ -154,20 +143,6 @@ class ReferDataset(data.Dataset):
         return img, target, tensor_embeddings, attention_mask
 
     def get_category_id(self, index):
-        """
-        获取指定索引的数据项对应的类别ID
-
-        参数:
-            index: 数据索引
-
-        返回:
-            category_id: 类别ID
-        """
-        # 获取对应的ref_id
         ref_id = self.ref_ids[index]
-
-        # 从refer对象中获取对应的引用
         ref = self.refer.loadRefs(ref_id)[0]
-
-        # 返回类别ID
         return ref['category_id']

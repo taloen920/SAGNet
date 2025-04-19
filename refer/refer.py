@@ -48,10 +48,7 @@ class REFER:
         print('loading dataset %s into memory...' % dataset)
         self.ROOT_DIR = osp.abspath(osp.dirname(__file__))
         
-        # 不需要重新定义类别映射，因为类别ID已经在instances.json和refs文件中定义好了
-
-        # 添加对新数据集的支持
-        if dataset in ['LandRef', 'rrsis', 'new1216']:
+        if dataset in ['LandRef']:
             self.DATA_DIR = osp.join(data_root, dataset)
             name = dataset
             self.IMAGE_DIR = osp.join(data_root, f'{name}/images')
@@ -67,27 +64,21 @@ class REFER:
                 print('No refer dataset is called [%s]' % dataset)
                 sys.exit()
 
-        # 加载refs
         tic = time.time()
         ref_file = osp.join(self.DATA_DIR, 'refs(' + splitBy + ').p')
         self.data = {}
         self.data['dataset'] = dataset
         self.data['refs'] = pickle.load(open(ref_file, 'rb'))
 
-        # 加载instances
         instances_file = osp.join(self.DATA_DIR, 'instances.json')
-        if dataset in ['LandRef', 'rrsis', 'new1216']:
+        if dataset in ['LandRef']:
             instances = json.load(open(instances_file, 'r'))
-            # instances是一个列表，直接作为annotations
             self.data['annotations'] = instances
 
-            # 从annotations中提取image信息
             image_ids = set(ann['image_id'] for ann in instances)
             self.data['images'] = [{'id': img_id, 'file_name': f"{img_id}.tif"} for img_id in image_ids]
 
-            # 从instance数据中提取唯一的类别ID
             unique_category_ids = set(ann['category_id'] for ann in instances)
-            # 创建类别数据，使用类别ID作为名称，如果需要可以后续修改
             self.data['categories'] = [
                 {'id': cat_id, 'name': f'category_{cat_id}'} 
                 for cat_id in unique_category_ids
@@ -107,17 +98,14 @@ class REFER:
         # fetch info from instances
         Anns, Imgs, Cats, imgToAnns = {}, {}, {}, {}
 
-        if self.data['dataset'] in ['LandRef', 'rrsis', 'new1216']:
-            # 针对自定义数据集的处理
+        if self.data['dataset'] in ['LandRef']:
             for ann in self.data['annotations']:
                 Anns[ann['id']] = ann
                 imgToAnns[ann['image_id']] = imgToAnns.get(ann['image_id'], []) + [ann]
 
-            # 使用实际的类别ID和名称
             for cat in self.data['categories']:
                 Cats[cat['id']] = cat['name']
 
-            # 处理refs数据
             Refs, imgToRefs, refToAnn, annToRef, catToRefs = {}, {}, {}, {}, {}
             Sents, sentToRef, sentToTokens = {}, {}, {}
 
@@ -126,7 +114,7 @@ class REFER:
                     # ids
                     ref_id = ref['ref_id']
                     ann_id = ref['ann_id']
-                    category_id = ref['category_id']  # 使用refs中的实际类别ID
+                    category_id = ref['category_id']
                     image_id = ref['image_id']
 
                     # add mapping related to ref
@@ -142,7 +130,6 @@ class REFER:
                         sentToRef[sent['sent_id']] = ref
                         sentToTokens[sent['sent_id']] = sent['tokens']
         else:
-            # 原有数据集的处理逻辑
             for ann in self.data['annotations']:
                 Anns[ann['id']] = ann
                 imgToAnns[ann['image_id']] = imgToAnns.get(ann['image_id'], []) + [ann]

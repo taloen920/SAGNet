@@ -17,6 +17,7 @@ from lib import segmentation
 from loss.loss import Loss
 
 
+
 def seed_everything(seed=2401):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -55,10 +56,10 @@ def IoU(pred, gt):
 
 def get_transform(args):
     transforms = [
-        T.Resize(args.img_size, args.img_size),
-        T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ]
+                  T.Resize(args.img_size, args.img_size),
+                  T.ToTensor(),
+                  T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                  ]
     return T.Compose(transforms)
 
 
@@ -86,13 +87,14 @@ def evaluate(model, data_loader, bert_model, epoch):
             total_its += 1
             image, target, sentences, attentions = data
             pixels = cv2.countNonZero(target.data.numpy()[0]) / 230400.
-            image, target, sentences, attentions = image.cuda(non_blocking=True), \
-                target.cuda(non_blocking=True), \
-                sentences.cuda(non_blocking=True), \
-                attentions.cuda(non_blocking=True)
+            image, target, sentences, attentions = image.cuda(non_blocking=True),\
+                                                   target.cuda(non_blocking=True),\
+                                                   sentences.cuda(non_blocking=True),\
+                                                   attentions.cuda(non_blocking=True)
 
             sentences = sentences.squeeze(1)
             attentions = attentions.squeeze(1)
+
 
             if bert_model is not None:
                 last_hidden_states = bert_model(sentences, attention_mask=attentions)[0]
@@ -126,11 +128,11 @@ def evaluate(model, data_loader, bert_model, epoch):
     results_str += '    overall IoU = %.2f\n' % (cum_I * 100. / cum_U)
     print(results_str)
 
-    # 修改Wandb记录方式，移除rank检查
-    wandb.log({
-        "val mIoU": mIoU,
-        "val oiou": cum_I * 100. / cum_U,
-        "val Loss": total_loss / total_its})
+    if args.local_rank == 0:
+        wandb.log({
+            "val mIoU": mIoU,
+            "val oiou": cum_I * 100. / cum_U,
+            "val Loss": total_loss / total_its})
 
     return 100 * iou, 100 * cum_I / cum_U
 
@@ -148,27 +150,29 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoc
     for i, data in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         total_its += 1
         image, target, sentences, attentions = data
-        image, target, sentences, attentions = image.cuda(non_blocking=True), \
-            target.cuda(non_blocking=True), \
-            sentences.cuda(non_blocking=True), \
-            attentions.cuda(non_blocking=True)
+        image, target, sentences, attentions = image.cuda(non_blocking=True),\
+                                               target.cuda(non_blocking=True),\
+                                               sentences.cuda(non_blocking=True),\
+                                               attentions.cuda(non_blocking=True)
 
         sentences = sentences.squeeze(1)
         attentions = attentions.squeeze(1)
 
         if bert_model is not None:
+
             last_hidden_states = bert_model(sentences, attention_mask=attentions)[0]  # (6, 10, 768)
             embedding = last_hidden_states.permute(0, 2, 1)  # (B, 768, N_l) to make Conv1d happy
             attentions = attentions.unsqueeze(dim=-1)  # (batch, N_l, 1)
-            output = model(image, embedding, attentions)  # , sentences_hidden_state)# [4,2,120,120]
+            output = model(image, embedding, attentions)#, sentences_hidden_state)# [4,2,120,120]
         else:
-            output = model(image, sentences, attentions)  # , sentences_hidden_state)
+            output = model(image, sentences, attentions)#, sentences_hidden_state)
         optimizer.zero_grad()
         loss = criterion(output, target)
 
         loss.backward()
         optimizer.step()
         lr_scheduler.step()
+
 
         torch.cuda.synchronize()
         train_loss += loss.item()
@@ -182,10 +186,9 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoc
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
-
-    # 修改Wandb记录方式，移除rank检查
-    wandb.log({
-        "Train Loss": train_loss / total_its, })
+    if args.local_rank == 0:
+        wandb.log({
+            "Train Loss": train_loss / total_its,})
 
 
 def main(args):
@@ -197,9 +200,12 @@ def main(args):
                                   get_transform(args=args),
                                   args=args)
 
-    # 移除分布式采样器，改用普通采样器
-    print("Successfully built train dataset.")
-    train_sampler = torch.utils.data.RandomSampler(dataset)
+    # batch sampler
+    print(f"local rank {args.local_rank} / global rank {utils.get_rank()} successfully built train dataset.")
+    num_tasks = utils.get_world_size()
+    global_rank = utils.get_rank()
+    train_sampler = torch.utils.data.distributed.DistributedSampler(dataset, num_replicas=num_tasks, rank=global_rank,
+                                                                    shuffle=True)
     test_sampler = torch.utils.data.SequentialSampler(dataset_test)
 
     # data loader
@@ -210,35 +216,36 @@ def main(args):
     data_loader_test = torch.utils.data.DataLoader(
         dataset_test, batch_size=1, sampler=test_sampler, num_workers=args.workers)
 
-    # 模型初始化 - 移除分布式设置
+    # model initialization
     print(args.model)
     model = segmentation.__dict__[args.model](pretrained=args.pretrained_swin_weights,
                                               args=args)
-    # 移除SyncBatchNorm，改用普通BatchNorm
+    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.cuda()
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], find_unused_parameters=True)
+    single_model = model.module  #ddp
 
-    # 移除DistributedDataParallel包装
-    single_model = model  # 不再需要model.module
-
+    # print(model)
     if args.model != 'lavt_one':
         model_class = BertModel
         bert_model = model_class.from_pretrained(args.ck_bert)
-        bert_model.pooler = None  # a work-around for a bug in Transformers = 3.0.2
+        bert_model.pooler = None  # a work-around for a bug in Transformers = 3.0.2 that appears for DistributedDataParallel
         bert_model.cuda()
-        # 移除SyncBatchNorm和DistributedDataParallel
+        bert_model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(bert_model)
+        bert_model = torch.nn.parallel.DistributedDataParallel(bert_model, device_ids=[args.local_rank])
         single_bert_model = bert_model
     else:
         bert_model = None
         single_bert_model = None
 
-    # 恢复训练
+    # resume training
     if args.resume:
         checkpoint = torch.load(args.resume, map_location='cpu')
         single_model.load_state_dict(checkpoint['model'], strict=False)
         if args.model != 'lavt_one':
             single_bert_model.load_state_dict(checkpoint['bert_model'])
 
-    # 参数优化设置
+    # parameters to optimize
     backbone_no_decay = list()
     backbone_decay = list()
     for name, m in single_model.backbone.named_parameters():
@@ -252,9 +259,9 @@ def main(args):
             {'params': backbone_no_decay, 'weight_decay': 0.0},
             {'params': backbone_decay},
             {"params": [p for p in single_model.classifier.parameters() if p.requires_grad]},
-            # bert的参数
+            # the following are the parameters of bert
             {"params": reduce(operator.concat,
-                              [[p for p in single_bert_model.encoder.layer[i].parameters()
+                              [[p for p in single_bert_model.module.encoder.layer[i].parameters()
                                 if p.requires_grad] for i in range(10)])},
         ]
     else:
@@ -262,42 +269,44 @@ def main(args):
             {'params': backbone_no_decay, 'weight_decay': 0.0},
             {'params': backbone_decay},
             {"params": [p for p in single_model.classifier.parameters() if p.requires_grad]},
-            # bert的参数
+            # the following are the parameters of bert
             {"params": reduce(operator.concat,
                               [[p for p in single_model.text_encoder.encoder.layer[i].parameters()
                                 if p.requires_grad] for i in range(10)])},
         ]
 
-    # 优化器
+    # optimizer
     optimizer = torch.optim.AdamW(params_to_optimize,
                                   lr=args.lr,
                                   weight_decay=args.weight_decay,
                                   amsgrad=args.amsgrad
                                   )
 
-    # 学习率调度器
+    # learning rate scheduler
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
                                                      lambda x: (1 - x / (len(data_loader) * args.epochs)) ** 0.9)
 
-    # 初始化
+    # housekeeping
     start_time = time.time()
     iterations = 0
     best_oIoU = -0.1
 
-    # 恢复训练(优化器, 学习率调度器, 和轮次)
+    # resume training (optimizer, lr scheduler, and the epoch)
     if args.resume:
         optimizer.load_state_dict(checkpoint['optimizer'])
         lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
         resume_epoch = checkpoint['epoch']
+
     else:
         resume_epoch = -999
 
-    # 训练循环
-    # 移除rank检查
-    wandb.watch(model, log="all")
+    # training loops
+    if args.local_rank == 0:
+        wandb.watch(model, log="all")
 
-    for epoch in range(max(0, resume_epoch + 1), args.epochs):
-        # 移除设置epoch的操作，因为不再使用DistributedSampler
+
+    for epoch in range(max(0, resume_epoch+1), args.epochs):
+        data_loader.sampler.set_epoch(epoch)
         train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, epoch, args.print_freq,
                         iterations, bert_model)
         iou, overallIoU = evaluate(model, data_loader_test, bert_model, epoch)
@@ -315,15 +324,15 @@ def main(args):
 
         if best:
             print('Better epoch: {}\n'.format(epoch))
-            # 直接保存，不需要使用utils.save_on_master
-            torch.save(dict_to_save, os.path.join(args.output_dir, 'model_best_{}.pth'.format(args.model_id)))
+            utils.save_on_master(dict_to_save, os.path.join(args.output_dir,
+                                                            'model_best_{}.pth'.format(args.model_id)))
             best_oIoU = overallIoU
-        # 直接保存，不需要使用utils.save_on_master
-        torch.save(dict_to_save, os.path.join(args.output_dir, 'model_last_{}.pth'.format(args.model_id)))
-        # 移除rank检查
-        wandb.save('model.h5')
+        utils.save_on_master(dict_to_save, os.path.join(args.output_dir,
+                                                        'model_last_{}.pth'.format(args.model_id)))
+        if args.local_rank == 0:
+            wandb.save('model.h5')
 
-    # 总结
+    # summarize
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
@@ -331,21 +340,14 @@ def main(args):
 
 if __name__ == "__main__":
     from args import get_parser
-
     seed_everything()
     parser = get_parser()
     args = parser.parse_args()
-
-    wandb.init(mode="offline")
-    # 初始化wandb，移除rank检查
-    wandb.init(project="rmsin_2080")
-
-    # 移除分布式学习初始化
-    # utils.init_distributed_mode(args)
-
-    # 为单卡训练设置默认值
-    args.local_rank = 0  # 设置为0以便于代码中的条件判断
-    args.distributed = False  # 明确指出不使用分布式
-
+    if args.local_rank == 0:
+        # wandb.init(mode="offline")
+        wandb.init(settings=wandb.Settings(init_timeout=120))
+        wandb.init(project="LandeRef")
+    # set up distributed learning
+    utils.init_distributed_mode(args)
     print('Image size: {}'.format(str(args.img_size)))
     main(args)

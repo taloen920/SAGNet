@@ -4,8 +4,12 @@ import datetime
 import math
 import time
 import torch
+import torch.distributed as dist
+import torch.backends.cudnn as cudnn
+
 import errno
 import os
+
 import sys
 
 
@@ -29,9 +33,16 @@ class SmoothedValue(object):
 
     def synchronize_between_processes(self):
         """
-        简化版：单卡模式下不需要同步，直接返回
+        Warning: does not synchronize the deque!
         """
-        return
+        if not is_dist_avail_and_initialized():
+            return
+        t = torch.tensor([self.count, self.total], dtype=torch.float64, device='cuda')
+        dist.barrier()
+        dist.all_reduce(t)
+        t = t.tolist()
+        self.count = int(t[0])
+        self.total = t[1]
 
     @property
     def median(self):
@@ -76,6 +87,8 @@ class MetricLogger(object):
             assert isinstance(v, (float, int))
             self.meters[k].update(v)
 
+
+
     def __getattr__(self, attr):
         if attr in self.meters:
             return self.meters[attr]
@@ -93,15 +106,14 @@ class MetricLogger(object):
         return self.delimiter.join(loss_str)
 
     def synchronize_between_processes(self):
-        """
-        简化版：单卡模式下不需要同步
-        """
-        pass
+        for meter in self.meters.values():
+            meter.synchronize_between_processes()
 
     def add_meter(self, name, meter):
         self.meters[name] = meter
 
     def log_every(self, iterable, print_freq, header=None):
+        print(iterable)
         i = 0
         if not header:
             header = ''
@@ -151,59 +163,62 @@ def mkdir(path):
 
 def setup_for_distributed(is_master):
     """
-    单卡模式下不需要禁用打印功能
+    This function disables printing when not in master process
     """
-    pass
+    import builtins as __builtin__
+    builtin_print = __builtin__.print
+
+    def print(*args, **kwargs):
+        force = kwargs.pop('force', False)
+        if is_master or force:
+            builtin_print(*args, **kwargs)
+
+    __builtin__.print = print
 
 
 def is_dist_avail_and_initialized():
-    """
-    单卡模式下始终返回False
-    """
-    return False
-
-
-def get_world_size():
-    """
-    单卡模式下始终返回1
-    """
-    return 1
-
-
-def get_rank():
-    """
-    单卡模式下始终返回0
-    """
-    return 0
-
-
-def is_main_process():
-    """
-    单卡模式下始终返回True
-    """
+    if not dist.is_available():
+        return False
+    if not dist.is_initialized():
+        return False
     return True
 
 
+def get_world_size():
+    if not is_dist_avail_and_initialized():
+        return 1
+    return dist.get_world_size()
+
+
+def get_rank():
+    if not is_dist_avail_and_initialized():
+        return 0
+    return dist.get_rank()
+
+
+def is_main_process():
+    return get_rank() == 0
+
+
 def save_on_master(*args, **kwargs):
-    """
-    单卡模式下直接保存
-    """
-    torch.save(*args, **kwargs)
+    if is_main_process():
+        torch.save(*args, **kwargs)
 
 
 def init_distributed_mode(args):
-    """
-    简化版：设置单卡训练的基本参数
-    """
-    args.distributed = False
-    args.rank = 0
-    args.world_size = 1
-    args.gpu = 0
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ['WORLD_SIZE'])
+        print(f"RANK and WORLD_SIZE in environment: {rank}/{world_size}")
+    else:
+        rank = -1
+        world_size = -1
 
-    # 设置GPU设备
     torch.cuda.set_device(args.local_rank)
+    torch.distributed.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
+    torch.distributed.barrier()
+    setup_for_distributed(is_main_process())
 
-    # 创建输出目录
     if args.output_dir:
         mkdir(args.output_dir)
     if args.model_id:
