@@ -1,4 +1,5 @@
-# Referring Remote Sensing Image Segmentation Method based on Scene-Aware Guided Network Mode![SAGNet](C:\Users\TK\Desktop\论文图列\最终\SAGNet.png)
+# Referring Remote Sensing Image Segmentation Method based on Scene-Aware Guided Network Mode
+![SAGNet](C:\Users\TK\Desktop\论文图列\最终\SAGNet.png)
 
 ## Setting Up
 ### Preliminaries
