@@ -1,4 +1,4 @@
-# Referring Remote Sensing Image Segmentation Method based on Scene-Aware Guided Network Mode
+# Referring Remote Sensing Image Segmentation Method based on Scene-Aware Guided Network Model
 
 ## Setting Up
 ### Preliminaries
