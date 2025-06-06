@@ -1,0 +1,2 @@
+CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.launch --nproc_per_node 2 --master_port 6567 test.py\
+ --swin_type base --dataset LandRef --resume /data/tkk/tk/Mymodel/checkpoints/model_best_landref.pth --split test --workers 4 --window12 --img_size 480

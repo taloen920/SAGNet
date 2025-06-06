@@ -1,0 +1,2 @@
+CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.launch --nproc_per_node 1 --master_port 6698 train.py\
+ --dataset LandRef --model_idlandref --batch-size 8 --epochs 40 --img_size 480 2>&1 | tee .num1-landref
